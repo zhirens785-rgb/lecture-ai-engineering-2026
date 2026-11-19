@@ -139,7 +139,7 @@ def search(query: str) -> list[dict]:
 
 
 def search_graph(query: str) -> dict:
-    """ベクトル検索を入口に、前後ページと共通用語で候補を広げる。"""
+    """ベクトル検索を入口に、前後ページ・共通用語・関連用語(related_term)を3hopでたどり、講義横断で候補を選ぶ。"""
     pages = {page["page_id"]: page for page in load_pages(RAG_SOURCE)}
     graph = json.loads(RAG_GRAPH.read_text(encoding="utf-8"))
     nodes = {node["id"]: node for node in graph["nodes"]
@@ -147,11 +147,15 @@ def search_graph(query: str) -> dict:
     adjacent = defaultdict(set)
     for edge in graph["edges"]:
         a, b = edge["source"], edge["target"]
-        if edge["relation"] in ("next_page", "mentions") and a in nodes and b in nodes:
+        # 改良1: related_term（関連用語）も探索対象に追加
+        if edge["relation"] in ("next_page", "mentions", "related_term") and a in nodes and b in nodes:
             adjacent[a].add(b)
             adjacent[b].add(a)
 
-    seeds = [hit for hit in search(query) if hit["page_id"] in pages][:min(GRAPH_START_K, GRAPH_MAX_RESULTS)]
+    # 改良2: 用語→関連用語→別講義ページをたどるためhop数を3に拡張、最大件数を12に拡張
+    custom_hops = 3
+    custom_max_results = 12
+    seeds = [hit for hit in search(query) if hit["page_id"] in pages][:min(GRAPH_START_K, custom_max_results)]
     seed_ids = {seed["page_id"] for seed in seeds}
     results, candidates = [], {}
     for rank, seed in enumerate(seeds):
@@ -162,9 +166,8 @@ def search_graph(query: str) -> dict:
         visited = {root}
         while queue:
             current, path = queue.popleft()
-            if len(path) - 1 >= GRAPH_HOPS:
+            if len(path) - 1 >= custom_hops:
                 continue
-            # 同じ深さなら、接続先が少ない用語からたどる。
             neighbors = sorted(adjacent[current], key=lambda n: (len(adjacent[n]), n))
             for neighbor in neighbors:
                 if neighbor in visited:
@@ -180,9 +183,20 @@ def search_graph(query: str) -> dict:
                              "path": [{"id": n, "title": nodes[n]["title"]} for n in route]}
                 if neighbor not in candidates or priority < candidates[neighbor][0]:
                     candidates[neighbor] = (priority, candidate)
-    expanded = [candidate for _, candidate in sorted(candidates.values())]
-    return {"seeds": results, "expanded": expanded[:max(0, GRAPH_MAX_RESULTS - len(results))],
-            "max_hops": GRAPH_HOPS}
+
+    # 改良3: 講義回(lecture)ごとにラウンドロビンで均等に候補を選び、特定回への偏りを防ぐ
+    by_lecture = defaultdict(list)
+    for _, candidate in sorted(candidates.values()):
+        by_lecture[candidate["lecture"]].append(candidate)
+
+    expanded = []
+    limit = max(0, custom_max_results - len(results))
+    while len(expanded) < limit and any(by_lecture.values()):
+        for lec in sorted(by_lecture.keys()):
+            if by_lecture[lec] and len(expanded) < limit:
+                expanded.append(by_lecture[lec].pop(0))
+
+    return {"seeds": results, "expanded": expanded, "max_hops": custom_hops}
 
 
 
