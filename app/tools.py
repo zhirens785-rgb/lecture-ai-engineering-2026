@@ -129,3 +129,27 @@ def search_graph(query: str) -> str:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
     except APIError as e:
         return json.dumps({"error": api_error_message(e.code)}, ensure_ascii=False)
+def make_quiz(lecture: int) -> str:
+    """指定した回（1始まりの整数）の用語集から4択または記述式の確認クイズを1問作成するための素材を返す。
+
+    「第2回のクイズを作って」のように、特定の回のクイズ作成を頼まれたときに使う。
+    """
+    glossary = load_glossary()
+    available_lectures = sorted({e["lecture"] for e in glossary})
+    if lecture not in available_lectures:
+        return (
+            f"第{lecture}回の用語データが存在しないためクイズを作成できません。"
+            f"現在クイズを作成できる回は {available_lectures} です。"
+        )
+
+    targets = [e for e in glossary if e["lecture"] == lecture]
+    picked = random.choice(targets)
+    return json.dumps(
+        {
+            "lecture": lecture,
+            "term": picked["term"],
+            "definition": picked["definition"],
+            "instruction": "この定義を問題文とし、用語名を答えさせるクイズを1問出題してください（答えはすぐに見せず、ユーザーが回答できるようにすること）。",
+        },
+        ensure_ascii=False,
+    )
